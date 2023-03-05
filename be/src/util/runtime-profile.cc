@@ -1226,8 +1226,10 @@ void RuntimeProfile::ToJson(Verbosity verbosity, Document* d) const {
   // queryObj that stores all JSON format profile information
   Value queryObj(kObjectType);
   ToJsonHelper(verbosity, &queryObj, d);
-  d->RemoveMember("contents");
-  d->AddMember("contents", queryObj, d->GetAllocator());
+  GenericStringRef<char> sectionRef(d->HasMember("internal_profile") ?
+      "profile_json" : "content");
+  d->RemoveMember(sectionRef);
+  d->AddMember(sectionRef, queryObj, d->GetAllocator());
 }
 
 void RuntimeProfile::JsonProfileToString(
