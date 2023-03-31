@@ -24,6 +24,27 @@ under the License.
 <script src="{{ __common__.host-url }}/www/frappe-charts/frappe-charts.min.umd.min.js" charset="utf-8"></script>
 <style href="{{ __common__.host-url }}/www/frappe-charts/frappe-charts.min.css" rel="stylesheet"></style>
 
+<div id="export_modal" class="modal fade" role="document">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5> Export Timing Diagram </h5>
+        <input class="btn btn-primary" type="button" value="X" data-dismiss="modal"/>
+      </div>
+      <div class="modal-body">
+        <h6 class="d-inline"> Filename: </h6>
+        <input id="export_filename" class="form-control-sm" type="text"/>
+        <select id="export_format" class="form-control-sm btn btn-primary">
+          <option selected>.svg</option>
+        </select>
+      </div>
+      <div class="modal-footer">
+        <a id="export_link" class="btn btn-primary" data-dismiss="modal" href="" role="button">Export</a>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="container">
 
 <style id="chart_axis_style">
@@ -37,7 +58,8 @@ under the License.
 {{/plan_metadata_unavailable}}
 
 {{^plan_metadata_unavailable}}
-<h3>Timeline</h3>
+<h4>Timeline</h4>
+  <input type="button" class="btn-sm btn-primary" style="font-size:16px;"  data-toggle="modal" value="Export Diagram" data-target="#export_modal" role="button"/>
   <label>
     <input type="checkbox" id="plan_order" onClick="refresh"/>
     Print tree in plan order (if unchecked, print in fragment order)
@@ -67,6 +89,8 @@ under the License.
 
 $("#plan-timing-tab").addClass("active");
 
+var export_link=document.getElementById("export_link");
+
 var profile={};
 
 var phases = [
@@ -83,18 +107,19 @@ var fragment_colors = ["#A9A9A9", "#FF8C00", "#8A2BE2", "#A52A2A", "#00008B", "#
 
 var fragments = [];
 
-var rownum=0;
 var char_width=6;
+var name_width=window.innerWidth*0.2;//gets resized later
 var max_namelen=0;
 var all_nodes = [];
 var receiver_nodes = [];
-var plan_order=false;
+var rownum=0;
 var cpu_usage_data;
 var cpu_node_colors;
 var fragments_parse_successful=false;
 var cpu_usage_parse_successful=false;
-var name_width=window.innerWidth*0.2;
+var plan_order=false;
 var prev_timeout;
+var padd_axis;
 
 function get_svg_rect(fill_color,x,y,width,height,dash,stroke_color){
   var rect=document.createElementNS("http://www.w3.org/2000/svg","rect");
@@ -176,6 +201,7 @@ function drawBars(svg, rownum, height, events, xoffset, px_per_ns) {
   });
 }
 
+// Collection of different query attributes from the profile, that is used to render both diagrams
 function collect(ignored_arg){
   if(profile.child_profiles[0].info_strings.find(({key})=>key==="Query State").value != "FINISHED"){
     return;
@@ -398,6 +424,7 @@ function collect(ignored_arg){
   }
 }
 
+// Render the fragment timing diagram
 function renderTiming(ignored_arg) {
   var timing_diagram = document.getElementById('timing_diagram');
   var phases_header = document.getElementById('phases_header');
@@ -552,6 +579,7 @@ function renderTiming(ignored_arg) {
   }
 }
 
+// Render CPU utilization_diagram
 function renderUtilization(ignored_arg){
   var timing_diagram=document.getElementById("timing_diagram");
   var utilization_diagram=document.getElementById("utilization_diagram");
@@ -584,12 +612,12 @@ function renderUtilization(ignored_arg){
   });
   clearTimeout(prev_timeout);
   prev_timeout=setTimeout(function(){
-    var padd_axis=name_width-document.querySelector(".x.axis").getBoundingClientRect().left-4;
+    padd_axis=name_width-document.querySelector(".x.axis").getBoundingClientRect().left-4;
     chart_axis_style.textContent=`.graph-svg-tip.comparison,.x.axis,.dataset-units{transition:transform 0.2s;transform:translate(${padd_axis}px,0);}`;
-  },3000);
+  },1000);
 }
 
-
+// Refresh the page until profile is loaded
 function refresh() {
   var req = new XMLHttpRequest();
   req.onload = function() {
@@ -610,6 +638,7 @@ function refresh() {
   req.send();
 }
 
+//Only render the attributes, without retrieving them each time
 window.addEventListener('resize', function(event) {
   if(fragments_parse_successful){
     renderTiming();
@@ -618,6 +647,42 @@ window.addEventListener('resize', function(event) {
     }
   }
 }, true);
+
+//Attaching the export link to the export button, after click event
+export_link.addEventListener('click',function(el){
+  if(export_format.value==".svg"){
+    var marg_top=window.innerHeight*0.05;
+    var header_height=phases_header.clientHeight;
+    var diagram_height=fragment_diagram.clientHeight;
+    var footer_height=timeticks_footer.clientHeight;
+    phases_header.setAttribute("y",marg_top+"px");
+    marg_top+=header_height;
+
+    fragment_diagram.setAttribute("y",marg_top+"px");
+    marg_top+=diagram_height;
+
+    timeticks_footer.setAttribute("y",marg_top+"px");
+    marg_top+=footer_height;
+    var cpu_usage_html="";
+    if(cpu_usage_parse_successful){
+      var cpu_usage_chart_svg=document.querySelector(`svg[class="frappe-chart chart"]`);
+      cpu_usage_chart_svg.setAttribute("y",marg_top+"px");
+      cpu_usage_chart_svg.setAttribute("x",padd_axis+"px");
+      cpu_usage_html=cpu_usage_chart_svg.outerHTML;
+    }
+    var svg_blob=new Blob([
+      `<?xml version="1.0" standalone="no"?>\r\n<svg xmlns="http://www.w3.org/2000/svg">`,
+      phases_header.outerHTML,
+      fragment_diagram.outerHTML,
+      timeticks_footer.outerHTML,
+      cpu_usage_html,
+      `</svg>`
+    ],{type:"image/svg+xml;charset=utf-8"});
+    export_link.href = URL.createObjectURL(svg_blob);
+  }
+  export_link.download = `${export_filename.value}${export_format.value}`;
+  export_link.click();
+});
 
 window.onload=refresh;
 
