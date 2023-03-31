@@ -21,9 +21,12 @@ under the License.
 
 </div>
 
+<script src="{{ __common__.host-url }}/www/frappe-charts/frappe-charts.min.umd.min.js" charset="utf-8"></script>
+<style href="{{ __common__.host-url }}/www/frappe-charts/frappe-charts.min.css" rel="stylesheet"></style>
+
 <div class="container">
 
-<style id="css">
+<style id="chart_axis_style">
 </style>
 
 {{> www/query_detail_tabs.tmpl }}
@@ -36,8 +39,8 @@ under the License.
 {{^plan_metadata_unavailable}}
 <h3>Timeline</h3>
   <label>
-  <input type="checkbox" id="plan_order" onClick="refresh"/>
-  Print tree in plan order (if unchecked, print in fragment order)
+    <input type="checkbox" id="plan_order" onClick="refresh"/>
+    Print tree in plan order (if unchecked, print in fragment order)
   </label>
 
 </div>
@@ -51,6 +54,8 @@ under the License.
   </div>
   <div style="margin-top:5px; border:1px solid #c3c3c3;">
     <svg id="timeticks_footer" height="15px"></svg>
+  </div>
+  <div id="utilization_diagram">
   </div>
 </div>
 
@@ -84,7 +89,12 @@ var max_namelen=0;
 var all_nodes = [];
 var receiver_nodes = [];
 var plan_order=false;
-var profile_available=false;
+var cpu_usage_data;
+var cpu_node_colors;
+var fragments_parse_successful=false;
+var cpu_usage_parse_successful=false;
+var name_width=window.innerWidth*0.2;
+var prev_timeout;
 
 function get_svg_rect(fill_color,x,y,width,height,dash,stroke_color){
   var rect=document.createElementNS("http://www.w3.org/2000/svg","rect");
@@ -97,7 +107,7 @@ function get_svg_rect(fill_color,x,y,width,height,dash,stroke_color){
     rect.setAttribute("stroke",stroke_color);
     rect.setAttribute("stroke-dasharray","2 2");
   }
-return rect;
+  return rect;
 }
 
 function get_svg_text(text,fill_color,x,y,height,container_center,max_width=0){
@@ -131,7 +141,7 @@ function get_svg_line(stroke_color,x1,y1,x2,y2,dash){
   return line;
 }
 
-function DrawBars(svg, rownum, height, events, xoffset, px_per_ns) {
+function drawBars(svg, rownum, height, events, xoffset, px_per_ns) {
   var color_idx = 0;
   var last_end = xoffset;
   bar_height = height - 2;
@@ -321,9 +331,70 @@ function collect(ignored_arg){
         fragments.push(fragment);
       }
     });
-    profile_available=true;
+    try{
+      var cpu_node_profiles=profile.child_profiles[2].child_profiles[0];
+      var max_num_samples=cpu_node_profiles.child_profiles[0].time_series_counters[0].num;
+      var time_labels=Array(max_num_samples);
+      var sample_time=500;//ms
+      var time_val=0;//to start from center, start with sample_time/2
+      for(var i=0;i<max_num_samples;i++){
+         time_labels[i]=(time_val/1000).toFixed(1)+"s";
+         time_val=time_val+sample_time;
+      }
+
+      //getting values
+      var node_cpu_usages=new Array(cpu_node_profiles.num_children);
+      var k=0;
+      cpu_node_colors=new Array(cpu_node_profiles.num_children);
+      var node_color_diff=360/cpu_node_profiles.num_children;
+      var node_color_val=0;
+      cpu_node_profiles.child_profiles.forEach(function(cpu_node){
+      //basis points for sys,user and iowait
+         var cpu_usage_vals=Array(cpu_node.time_series_counters[0].num).fill(0);
+         for(var i=0;i<3;i++){
+            var total_basis_points=cpu_node.time_series_counters[i].data.split(",").map(function(val){
+               return parseInt(val,10);
+            });
+            for(j=0;j<cpu_usage_vals.length;j++){
+               cpu_usage_vals[j]=cpu_usage_vals[j]+total_basis_points[j];
+            }
+         }
+         // accumulated basis points
+         cpu_usage_vals=cpu_usage_vals.map(function(val){
+            return val/100;
+         });
+         node_cpu_usages[k]={
+            name:cpu_node.profile_name,
+            type:"line",
+            values:cpu_usage_vals
+         };
+         cpu_node_colors[k]=`hsl(${node_color_val},100%,50%)`;
+         node_color_val+=node_color_diff;
+         k++;
+      });
+      cpu_usage_data={
+         datasets:node_cpu_usages,
+         labels:time_labels,
+         yMarkers:[
+            {
+               label:'',
+               value:0
+            }
+         ],
+         xMarkers:[
+            {
+               label:'',
+               value:0
+            }
+         ]
+      };
+      cpu_usage_parse_successful=true;
+    }catch(e){
+      cpu_usage_parse_successful=false;
+    }
+    fragments_parse_successful=true;
   }catch(e){
-    profile_available=false;
+    fragments_parse_successful=false;
   }
 }
 
@@ -341,14 +412,14 @@ function renderTiming(ignored_arg) {
   fragment_diagram.setAttribute("height",rownum*height+"px");
 
   var display_height=window.innerHeight-timing_diagram.offsetTop-70;
-  fragment_diagram.parentNode.style.height=display_height*1+"px";
+  var scaling_factor=(cpu_usage_parse_successful?0.6:1);
+  fragment_diagram.parentNode.style.height=display_height*scaling_factor+"px";
 
   fragment_diagram.setAttribute("width",timing_diagram.clientWidth-50);
   phases_header.setAttribute("width",fragment_diagram.clientWidth)
   timeticks_footer.setAttribute("width",fragment_diagram.clientWidth)
-
   var frag_name_width = (Math.max(2, (fragments.length-1).toString().length) + 3) * char_width;
-  var name_width = max_namelen * char_width + (frag_name_width + 2);
+  name_width = max_namelen * char_width + (frag_name_width + 2);
   var chart_width = fragment_diagram.clientWidth - name_width;
 
   var px_per_ns = chart_width / maxts;
@@ -389,14 +460,14 @@ function renderTiming(ignored_arg) {
       );
 
       // Fragment/sender timing row
-      DrawBars(fragment_diagram, rownum_l, height, fevents, name_width, px_per_ns);
+      drawBars(fragment_diagram, rownum_l, height, fevents, name_width, px_per_ns);
 
       for(var i = 0; i < fragment.nodes.length; i++) {
         var node = fragment.nodes[i];
 
         if (node.events != undefined) {
           // Plan node timing row
-          DrawBars(fragment_diagram, rownum_l, height, node.events, name_width, px_per_ns);
+          drawBars(fragment_diagram, rownum_l, height, node.events, name_width, px_per_ns);
           if (node.type == "HASH_JOIN_NODE") {
             fragment_diagram.appendChild(get_svg_text("X","#000000", name_width + Math.min.apply(null,node.events[2].tslist) * px_per_ns, text_y, height, false));
             fragment_diagram.appendChild(get_svg_text("O","#000000", name_width + Math.min.apply(null,node.events[2].tslist) * px_per_ns, text_y, height, false));
@@ -481,6 +552,43 @@ function renderTiming(ignored_arg) {
   }
 }
 
+function renderUtilization(ignored_arg){
+  var timing_diagram=document.getElementById("timing_diagram");
+  var utilization_diagram=document.getElementById("utilization_diagram");
+  var chart_axis_style=document.getElementById("chart_axis_style");
+  utilization_diagram.innerHTML="";
+  utilization_diagram.style="";
+  chart_axis_style.textContent="";
+  var display_height=window.innerHeight-timing_diagram.offsetTop-70;
+  new frappe.Chart("#utilization_diagram",{
+      data:cpu_usage_data,
+      type:'axis-mixed',
+      colors:cpu_node_colors,
+      axisOptions:{
+        xAxisMode: 'tick',
+        xIsSeries: true,
+        yAxisMode: 'span',
+      },
+      lineOptions:{
+        dotSize:4,
+      },
+      height:display_height*0.4,
+      tooltipOptions:{
+        formatTooltipY: function(data) {
+          if(data==undefined){
+            data="NA";
+          }
+          return data + '%';
+        }
+      }
+  });
+  clearTimeout(prev_timeout);
+  prev_timeout=setTimeout(function(){
+    var padd_axis=name_width-document.querySelector(".x.axis").getBoundingClientRect().left-4;
+    chart_axis_style.textContent=`.graph-svg-tip.comparison,.x.axis,.dataset-units{transition:transform 0.2s;transform:translate(${padd_axis}px,0);}`;
+  },3000);
+}
+
 
 function refresh() {
   var req = new XMLHttpRequest();
@@ -488,11 +596,14 @@ function refresh() {
     if (req.status == 200) {
       profile = JSON.parse(req.responseText)["profile_json"];
       collect();
-      if(profile_available==false){
-        setTimeout(refresh,1000);
-      }else{
+      if(fragments_parse_successful){
         renderTiming();
-       }
+        if(cpu_usage_parse_successful){
+          renderUtilization();
+        }
+      }else{
+        setTimeout(refresh,1000);
+      }
     }
   }
   req.open('GET', make_url("/query_timeline?query_id={{query_id}}&json"), true);
@@ -500,8 +611,11 @@ function refresh() {
 }
 
 window.addEventListener('resize', function(event) {
-  if(profile_available){
+  if(fragments_parse_successful){
     renderTiming();
+    if(cpu_usage_parse_successful){
+      renderUtilization();
+    }
   }
 }, true);
 
